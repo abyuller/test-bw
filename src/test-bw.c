@@ -1,5 +1,9 @@
 #include "cfg.h"
 #include "db.h"
+
+#define PCRE2_CODE_UNIT_WIDTH 8
+
+#include <pcre2.h>
 #include <signal.h>
 #include <sys/socket.h>
 
@@ -7,6 +11,13 @@
 
 PELEMENT elements;
 static int socketId;
+
+typedef struct _PCRE_VALUES {
+	pcre2_code *re;
+	pcre2_match_data *match_data;
+} PCRE_VALUES;
+
+static PCRE_VALUES pcre_extern, pcre_local;
 
 void stop_all() {
 	for (int i = 0; i < thread_count; ++i) {
@@ -32,14 +43,15 @@ void system_signals_init()
 //open socket descriptor
 
 static bool check_url(char* url) {
-	//FIXME: apply PCRE to the this check
 	size_t s = strlen(url);
-	if (s > 2) {
-		if (!strcmp(url, "localhost")) return true;
-		//check dot in url
-		char *p = strchr(url, '.');
-		return ((p > url) && (p + 1 < url + s));
-	}
+	printf("%s", url);
+	int rc = pcre2_match(pcre_extern.re, (PCRE2_SPTR)url, s, 0, 0, pcre_extern.match_data, NULL);
+	if (rc < 0) {
+		if (rc == PCRE2_ERROR_NOMATCH) {
+			if (pcre2_match(pcre_local.re, (PCRE2_SPTR)url, s, 0, 0, pcre_local.match_data, NULL) >= 0)
+				return (pcre2_get_ovector_pointer(pcre_local.match_data)[0] == 0); 
+		}
+	} else return (pcre2_get_ovector_pointer(pcre_extern.match_data)[0] == 0);
 	return false;
 }
 
@@ -166,13 +178,19 @@ static void *loop(void *par) {
 	return NULL; 
 }
 
+
 int main(int argc, char *argv[]) {
-	 int err = parse_args(argc, argv);
-	 if (!err) {
+
+	static const char* pcre_extern_pattern = "(https?:\\/\\/(www\\.)?)?[-a-zA-Z0-9@:%._\\+~#=]{2,256}\\.[a-z]{2,4}\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
+	static const char* pcre_local_pattern = "(http:\\/\\/)?localhost\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
+
+	int err = parse_args(argc, argv);
+	if (!err) {
 		err = parse_cfg();
 		if (!err) {
 			//init fcgi library
 			FCGX_Init();
+			
 			//open new socket
 			//FIXME: Why 20? May be 200 or 2000?
 			socketId = FCGX_OpenSocket(SOCKET_PATH, 20);
@@ -182,17 +200,33 @@ int main(int argc, char *argv[]) {
 			} else {
 				system_signals_init();
 				elements = (PELEMENT)malloc(thread_count * sizeof(ELEMENT));
+
+				//init pcre2 structures
+				int errornumber;
+				PCRE2_SIZE erroroffset;
+				pcre_extern.re = pcre2_compile((PCRE2_SPTR)pcre_extern_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
+				pcre_local.re = pcre2_compile((PCRE2_SPTR)pcre_local_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
+				pcre_extern.match_data = pcre2_match_data_create_from_pattern(pcre_extern.re, NULL);
+				pcre_local.match_data = pcre2_match_data_create_from_pattern(pcre_local.re, NULL);
+				
 				//creating working threads
 				for (int i = 0; i < thread_count; i++)
 					pthread_create(&elements[i].thread, NULL, loop, elements + i);
 				//waiting for the completion of work threads
 				for (int i = 0; i < thread_count; i++)
 					pthread_join(elements[i].thread, NULL);
+
+				pcre2_match_data_free(pcre_extern.match_data);
+				pcre2_code_free(pcre_extern.re);
+				pcre2_match_data_free(pcre_local.match_data);
+				pcre2_code_free(pcre_local.re);
+				
 				free(elements);
 			}
 		}
-	 }
-	 if (err) fprintf(stdout, "%s\n", strerror(err));
-	 return err;
+	}
+	if (err) fprintf(stdout, "%s\n", strerror(err));
+
+	return err;
  }
  

@@ -16,6 +16,8 @@ For the further development of the project, install the following packages:
 
 *libfcgi-dev* (Ubuntu) or *fcgi* (Archlinux)
 
+*libpcre2-dev* (Ubuntu) or *pcre2* (Archlinux)
+
 For the testing and debugging on the standalone PC install next packages:
 
 *nginx*

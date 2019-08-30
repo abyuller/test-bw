@@ -1,8 +1,8 @@
 files=test-bw.c cfg.c db.c
 objects=../obj/test-bw.o ../obj/db.o ../obj/cfg.o
 
-LIBS=-lpthread -lfcgi -lmysqlclient -lmemcached
-CFLAGS= -std=c18 -O2 -Wall -Wextra -ftree-vectorize -c
+LIBS=-lpthread -lfcgi -lmysqlclient -lmemcached -lpcre2-8
+CFLAGS= -std=c99 -O2 -Wall -Wextra -ftree-vectorize -c
 TARGET_OUTPUT_FILE=../bin/test-bw
 
 GCC=/usr/bin/gcc $(CFLAGS)
