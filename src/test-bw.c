@@ -17,8 +17,6 @@ typedef struct _PCRE_VALUES {
 	pcre2_match_data *match_data;
 } PCRE_VALUES;
 
-static PCRE_VALUES pcre_extern, pcre_local;
-
 void stop_all() {
 	for (int i = 0; i < thread_count; ++i) {
 		//FCGX_Finish_r(&elements[i].cgi_request);
@@ -42,7 +40,7 @@ void system_signals_init()
 
 //open socket descriptor
 
-static bool check_url(char* url) {
+static bool check_url(char* url, PCRE_VALUES pcre_extern, PCRE_VALUES pcre_local) {
 	size_t s = strlen(url);
 	printf("%s", url);
 	int rc = pcre2_match(pcre_extern.re, (PCRE2_SPTR)url, s, 0, 0, pcre_extern.match_data, NULL);
@@ -82,8 +80,8 @@ static void redirect302(char* url, char* txt, FCGX_Stream *out) {
 	FCGX_PutS("</html>\r\n", out);
 }
 
-static int redirect_fallback(char* url, FCGX_Stream *out) {
-	if (check_url(url)) {
+static int redirect_fallback(char* url, PCRE_VALUES pcre_extern, PCRE_VALUES pcre_local, FCGX_Stream *out) {
+	if (check_url(url, pcre_extern, pcre_local)) {
 		redirect302(url, "Temporary moved",  out);
 		return 0;
 	}
@@ -93,11 +91,21 @@ static int redirect_fallback(char* url, FCGX_Stream *out) {
 
 static void *loop(void *par) { 
 	PELEMENT item = (PELEMENT)par;
+	PCRE_VALUES pcre_extern, pcre_local;
 	
 	if (0 != FCGX_InitRequest(&item->cgi_request, socketId, 0)) { 
 		fprintf(stderr, "Can't init request\n"); 
 		return NULL; 
 	} 
+	//init pcre2 structures
+	int errornumber;
+	PCRE2_SIZE erroroffset;
+	static const char* pcre_extern_pattern = "(https?:\\/\\/(www\\.)?)?[-a-zA-Z0-9@:%._\\+~#=]{2,256}\\.[a-z]{2,4}\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
+	static const char* pcre_local_pattern = "(http:\\/\\/)?localhost\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
+	pcre_extern.re = pcre2_compile((PCRE2_SPTR)pcre_extern_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
+	pcre_local.re = pcre2_compile((PCRE2_SPTR)pcre_local_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
+	pcre_extern.match_data = pcre2_match_data_create_from_pattern(pcre_extern.re, NULL);
+	pcre_local.match_data = pcre2_match_data_create_from_pattern(pcre_local.re, NULL);
 	//we don’t care about the result of connection with database
 	db_init_and_open(item);
 	for (;;) { 
@@ -148,9 +156,9 @@ static void *loop(void *par) {
 			char* url = db_get_url(item, username);
 			if (url) {
 				printf("url = %s\n", url);
-				if (check_url(url)) {
+				if (check_url(url, pcre_extern, pcre_local)) {
 					redirect302(url, "Temporary moved", item->cgi_request.out);
-				} else redirect_fallback(fallback_url, item->cgi_request.out);
+				} else redirect_fallback(fallback_url, pcre_extern, pcre_local, item->cgi_request.out);
 				free(url);
 			} else {
 				if (item->db_client) {
@@ -158,7 +166,7 @@ static void *loop(void *par) {
 					if (!my_memcached) success = false;
 				} else success = false;
 				if (success) {
-					if (!redirect_fallback(fallback_url, item->cgi_request.out))
+					if (!redirect_fallback(fallback_url, pcre_extern, pcre_local,  item->cgi_request.out))
 						//fallback url is correct
 						memcached_add(my_memcached, username, strlen(username), fallback_url, strlen(fallback_url), memcache_timeout, 0);
 				} else
@@ -175,15 +183,15 @@ static void *loop(void *par) {
 		FCGX_Finish_r(&item->cgi_request);
 	}
 	db_close_and_done(item->db_client);
+	pcre2_match_data_free(pcre_extern.match_data);
+	pcre2_code_free(pcre_extern.re);
+	pcre2_match_data_free(pcre_local.match_data);
+	pcre2_code_free(pcre_local.re);
 	return NULL; 
 }
 
 
 int main(int argc, char *argv[]) {
-
-	static const char* pcre_extern_pattern = "(https?:\\/\\/(www\\.)?)?[-a-zA-Z0-9@:%._\\+~#=]{2,256}\\.[a-z]{2,4}\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
-	static const char* pcre_local_pattern = "(http:\\/\\/)?localhost\\b([-a-zA-Z0-9@:%_\\+.~#?&//=]*)";
-
 	int err = parse_args(argc, argv);
 	if (!err) {
 		err = parse_cfg();
@@ -200,14 +208,6 @@ int main(int argc, char *argv[]) {
 			} else {
 				system_signals_init();
 				elements = (PELEMENT)malloc(thread_count * sizeof(ELEMENT));
-
-				//init pcre2 structures
-				int errornumber;
-				PCRE2_SIZE erroroffset;
-				pcre_extern.re = pcre2_compile((PCRE2_SPTR)pcre_extern_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
-				pcre_local.re = pcre2_compile((PCRE2_SPTR)pcre_local_pattern, PCRE2_ZERO_TERMINATED, 0, &errornumber, &erroroffset, NULL);
-				pcre_extern.match_data = pcre2_match_data_create_from_pattern(pcre_extern.re, NULL);
-				pcre_local.match_data = pcre2_match_data_create_from_pattern(pcre_local.re, NULL);
 				
 				//creating working threads
 				for (int i = 0; i < thread_count; i++)
@@ -215,11 +215,6 @@ int main(int argc, char *argv[]) {
 				//waiting for the completion of work threads
 				for (int i = 0; i < thread_count; i++)
 					pthread_join(elements[i].thread, NULL);
-
-				pcre2_match_data_free(pcre_extern.match_data);
-				pcre2_code_free(pcre_extern.re);
-				pcre2_match_data_free(pcre_local.match_data);
-				pcre2_code_free(pcre_local.re);
 				
 				free(elements);
 			}
